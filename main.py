@@ -11,37 +11,37 @@ from reportlab.platypus import SimpleDocTemplate
 
 
 import return_student_bar_graph
+import return_student_bullet_chart
 
 
 def main(data):
     RIPA_df = pd.read_excel("data/RIPA.xlsx", skiprows=3)
-    RIPA_df["Course"] = RIPA_df["Course Section"].apply(lambda x: x.split("-")[0])
-    RIPA_df["Section"] = RIPA_df["Course Section"].apply(lambda x: x.split("-")[1])
+    RIPA_df = RIPA_df.rename(columns={"Student ID": "StudentID"})
 
-    print(RIPA_df)
+    daily_df = RIPA_df[RIPA_df["Course Section"] == "DAILY-ATTD"]
 
-    # HonorRoll_df = pd.read_excel('data/HonorRoll.xlsx')
-    # HonorRoll_StudentIDs = HonorRoll_df['Student ID'].to_list()
-
-    MasterSchedule_df = pd.read_excel("data/MasterSchedule.xlsx").drop_duplicates(
-        subset=["Course Code", "Section"]
+    programs_df = pd.read_csv("data/1_01.csv").drop_duplicates(
+        subset=["StudentID", "Course", "Section"]
     )
-    MasterSchedule_df["Course Section"] = MasterSchedule_df.apply(
-        lambda x: f"{x['Course Code']}-{str(x['Section']).zfill(2)}", axis=1
-    )
-    MasterSchedule_df = MasterSchedule_df[["Course Section", "Teacher Name", "PD"]]
-    print(MasterSchedule_df)
+    cols = ["StudentID", "Course", "Section", "Teacher1", "Period",'Mark2']
+    programs_df = programs_df[cols]
 
-    RIPA_df = RIPA_df.merge(
-        MasterSchedule_df, on=["Course Section"], how="left"
-    ).fillna({"Teacher Name": "", "PD": -1})
+    programs_df["Course Section"] = programs_df.apply(
+        lambda x: f"{x['Course']}-{str(x['Section']).zfill(2)}", axis=1
+    )
+
+    RIPA_df = programs_df.merge(
+        RIPA_df, on=["StudentID", "Course Section"], how="left"
+    ).dropna()
+
+    RIPA_df = pd.concat([RIPA_df, daily_df])
+    RIPA_df = RIPA_df.fillna({"Period": -1, "Teacher1": "", "Course": "DAILY"})
 
     RIPA_df["Dept"] = RIPA_df["Course"].apply(return_course_dept)
     RIPA_df["Label"] = RIPA_df.apply(return_bar_label, axis=1)
 
     ## determine median absences by course/section
     median_abs_by_course_section = pd.pivot_table(
-        # RIPA_df[RIPA_df['Student ID'].isin(HonorRoll_StudentIDs)],
         RIPA_df,
         index="Course Section",
         values="Number Days Absent",
@@ -53,8 +53,6 @@ def main(data):
     RIPA_df = RIPA_df.merge(
         median_abs_by_course_section, on=["Course Section"], how="left"
     ).fillna(0)
-    # RIPA_df = RIPA_df[RIPA_df['Median Days Absent']>0]
-    # RIPA_df = RIPA_df[RIPA_df['Student ID']==100620332]
 
     styles = getSampleStyleSheet()
 
@@ -89,12 +87,24 @@ def main(data):
     ]
 
     flowables = []
-    for (student_name, StudentID), attd_df in RIPA_df.groupby(
-        ["Student Name", "Student ID"]
-    ):
-        attd_df = attd_df.sort_values(by=["PD"], ascending=False)
 
-        total_days_absent = attd_df.iloc[-1, 10]
+    RIPA_df = RIPA_df[RIPA_df["StudentID"] == 234056992]
+    
+
+    for (student_name, StudentID), attd_df in RIPA_df.groupby(
+        ["Student Name", "StudentID"]
+    ):
+        if len(attd_df) <= 1:
+            continue
+
+        attd_df = attd_df.sort_values(by=["Period"], ascending=False)
+
+        total_days_absent = attd_df.iloc[-1, :]["Number Days Absent"]
+        total_days_enrolled = attd_df.iloc[-1, :]["Number Reporting Days"]
+
+        total_missed_days_of_classes = (
+            attd_df["Number Days Absent"].sum() - total_days_absent
+        )
 
         flowables.extend(letter_head)
         flowables.append(Spacer(width=0, height=0.25 * inch))
@@ -109,25 +119,25 @@ def main(data):
         flowables.append(paragraph)
 
         paragraph = Paragraph(
-            f"{first_name} has missed {total_days_absent} days this school year. The narrow black bar represents {first_name}'s attendance and the wide grey bar represents the number of days absent by the average HSFI student.",
+            f"{first_name} has missed {total_days_absent:.0f} out of {total_days_enrolled:.0f} days this school year. In the chart below, the narrow bar represents {first_name}'s days absent (based on period 3 official attendance) and the wide gray bar represents the average days absent for HSFI Students.",
             styles["BodyText"],
         )
         flowables.append(paragraph)
 
-        chart_flowable = return_student_bar_graph.return_daily_only(attd_df)
+        chart_flowable = return_student_bullet_chart.return_daily_only(attd_df)
         flowables.append(chart_flowable)
 
         paragraph = Paragraph(
-            f"Attending on time every day to all classes will help {first_name} learn and stay on track. The chart below shows how much {first_name} has missed in their classes (narrow black bar) and how much class the average HSFI student has missed (wide grey bar)",
+            f"Attending on time every day to all classes will help {first_name} learn and stay on track. {first_name} missed {total_missed_days_of_classes:.0f} periods of instruction combined in all of their classes including excused absences, early dismissals, field trips, PSAL games, etc.. In the chart below, the narrow bar represents {first_name}'s periods absent by class and the wide gray bar represents the average periods absent of the other students in {first_name}'s classes.",
             styles["BodyText"],
         )
         flowables.append(paragraph)
 
-        chart_flowable = return_student_bar_graph.return_classes_only(attd_df)
+        chart_flowable = return_student_bullet_chart.return_classes_only(attd_df)
         flowables.append(chart_flowable)
 
         paragraph = Paragraph(
-            f"You are key to helping {first_name} attend school every day possible; our classes are better when {first_name} is there.",
+            f"You are key to helping {first_name} attend school on time every day and every period possible; our classes are better when {first_name} is there!",
             styles["BodyText"],
         )
         flowables.append(paragraph)
@@ -155,12 +165,12 @@ def main(data):
 
 
 def return_bar_label(row):
-    PD = row["PD"]
+    PD = row["Period"]
     Course = row["Course"]
     if PD == -1 and Course == "DAILY":
-        return "Overall<br>Daily<br>Attd"
+        return "Overall<br>Daily<br>Absences"
     Dept = row["Dept"]
-    Teacher = row["Teacher Name"].title()
+    Teacher = row["Teacher1"].title()
     return f"P{int(PD)} {Dept}<br>{Teacher}"
 
 
@@ -173,8 +183,12 @@ def return_course_dept(course_code):
         return "Math"
     if course_code[0] == "S":
         return "Science"
+    if course_code[0:2] == "FS":
+        return "Spanish"
     if course_code[0] == "H":
-        return "Social Studies"
+        return "SS"
+    if course_code[0] == "R":
+        return "Career<br>Readiness"
     if course_code[0:2] == "PP":
         return "Phys Ed"
     if course_code[0:2] == "PH":
@@ -189,7 +203,8 @@ def return_course_dept(course_code):
         return "AP Art 2D"
     if course_code[0] in ["A", "B", "T"]:
         return "CTE"
-
+    if course_code[0:2] in ["SK"]:
+        return "CTE"
 
 if __name__ == "__main__":
     data = {}
